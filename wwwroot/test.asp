@@ -17,3 +17,5 @@ World "Quotes"
  %>
 
 Whoop!
+
+<!-- #include file="include.inc" -->

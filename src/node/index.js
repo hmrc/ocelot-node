@@ -3,10 +3,12 @@ const URL = require("url");
 const FS = require("fs");
 const VM = require("vm");
 const QS = require("querystring");
+const PATH = require("path");
 
 const hostname = "127.0.0.1";
 const port = "3000";
 const wwwRoot = "C:/Projects/ocelot-cms/wwwroot/";
+//const wwwRoot = "C:/Projects/ocelot-node/wwwroot/";
 
 const replace = {
     "\n": "\\n",
@@ -56,10 +58,23 @@ function wrapText(text) {
     return 'Response.Write("' + text + '");';
 }
 
-function parseASP(context) {
-    const str = context.data.toString();
-    const chunks = [];
-    let state = "text";
+function readP(target) {
+    console.log("Reading file ", target);
+    return new Promise((resolve, reject) => {
+        FS.readFile(wwwRoot + target, (err, data) => {
+            if (err != null) {
+                reject(err)
+            } else {
+                resolve(data);
+            }
+        })
+    })
+}
+
+async function parseASP(myPath, str, startingState) {
+    console.log("Parsing ", myPath);
+    let chunks = [];
+    let state = startingState || "text";
     let chunk = "";
     let index = 0;
     while (index < str.length) {
@@ -71,13 +86,18 @@ function parseASP(context) {
                 chunk = "";
             }
             state = "code";
-     /*   } else if (state === "text" && str.substr(index, 4) === "<!--") {
+        } else if (state === "text" && str.substr(index, 4) === "<!--") {
+            if (chunk.length > 0) {
+                chunks.push(wrapText(chunk));
+                chunk = "";
+            }
+
             // comment
             index += 2;
             const start = index;
 
             while (index < str.length && str.substr(index, 3) !== "-->") {
-                index += 1;
+                index += 3;
             }
 
             if (index === str.length) {
@@ -86,10 +106,65 @@ function parseASP(context) {
             }
 
             const comment = str.substr(start, index)
-            const incIndex = comment.indexOf("#include") ;
+            const incIndex = comment.indexOf("#include");
             if (incIndex !== -1) {
+                let pathIndex = str.indexOf("file", incIndex);
+                if (pathIndex !== -1) {
+                    const quoteStart = str.indexOf("\"", pathIndex);
+                    const quoteEnd = str.indexOf("\"", quoteStart + 1)
+                    const path = str.substring(quoteStart + 1, quoteEnd);
+                    const targetFile = PATH.normalize(PATH.dirname(myPath) + "/" + path);
+                    const includeChunks = await readP(targetFile).then(data => parseASP(targetFile, data.toString()));
+
+                    chunks = chunks.concat(includeChunks);
+
+                }
+            } else {
+                chunks.push("<!--" + comment + "-->");
+                chunk = "";
             }
-*/
+        } else if (state === "text" && str.startsWith("<script", index)) {
+            console.log("Handling script");
+            if (chunk.length > 0) {
+                chunks.push(wrapText(chunk));
+                chunk = "";
+            }
+
+            const scriptStart = index + "<script".length;
+            const scriptTag = str.substring(scriptStart, str.indexOf(">", scriptStart))
+            const match = scriptTag.match(/([^\t\n\f \/>"'=]+)="((?:[^"\\]|\\.)*)"/g)
+
+            if (match !== null) {
+                const attr = {};
+                for (let i = 0; i < match.length; i += 1) {
+                    const [key, value] = match[i].split("=");
+                    attr[key] = value.substring(1, value.length - 1);
+                }
+
+                if (attr["runat"] === "server") {
+                    if ("src" in attr) {
+                        let targetFile;
+                        if (attr["src"].startsWith("/")) {
+                            targetFile = attr["src"]
+                        } else {
+
+                            targetFile = PATH.normalize(PATH.dirname(myPath) + "/" + path);
+                        }
+                        console.log("Trying to read server side script file from ", targetFile);
+                        const includeChunks = await readP(targetFile).then(data => parseASP(targetFile, data.toString(), "code"));
+                        chunks = chunks.concat(includeChunks);
+
+                        index += scriptStart + scriptTag.length + 1;
+                    } else {
+                        console.log("Including embedded server side script");
+                        chunks.push(str.substring(scriptStart + scriptTag.length, str.indexOf("</script>")));
+
+                        index += chunks[chunks.length - 1].length + "</script>".length;
+                    }
+                } else {
+                    // Find the end tag and include the script
+                }
+            }
         } else if (state === "code" && str.substr(index, 2) === "%>") {
             index += 1;
             if (chunk.length > 0) {
@@ -117,6 +192,10 @@ function parseASP(context) {
         }
     }
 
+    return chunks;
+}
+
+function convertASP(context, chunks) {
     const sandbox = {
         Response: new ASPResponse(context),
         Request: new ASPRequest(context)
@@ -133,21 +212,12 @@ function parseASP(context) {
 
 function handleASP(context) {
     console.log("Dynamic request for ", context.url.pathname);
-    const targetFile = wwwRoot + context.url.pathname;
+    const targetFile = context.url.pathname;
 
-    if (FS.existsSync(targetFile)) {
-        FS.readFile(targetFile, (err, data) => {
-            if (err) {
-                sendError(500, err, context.res);
-                return;
-            }
-            context.data = data;
-            try {
-                parseASP(context);
-            } catch (ex) {
-                sendError(500, ex.stack, context.res);
-            }
-        })
+    if (FS.existsSync(wwwRoot + targetFile)) {
+        readP(targetFile).then(data => parseASP(targetFile, data.toString())
+            .then(chunks => convertASP(context, chunks))
+        ).catch(ex => sendError(500, ex.stack, context.res))
     } else {
         sendError(404, "File not found", context.res);
     }
