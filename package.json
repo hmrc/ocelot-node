@@ -1,0 +1,12 @@
+{
+    "name":"ocelot-node",
+    "version":"0.1.0",
+    "licence":"Apache-2.0",
+    "description":"Classic ASP support in Node",
+    "main":"src/node/index.js",
+    "repository": {
+        "type":"git",
+        "url":"https://github.com/hmrc/ocelot-node"
+    }
+
+}
