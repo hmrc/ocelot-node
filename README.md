@@ -1,9 +1,10 @@
 
 # ocelot-node
 
- [ ![Download](https://api.bintray.com/packages/hmrc/releases/ocelot-node/images/download.svg) ](https://bintray.com/hmrc/releases/ocelot-node/_latestVersion)
+Looks like the Ocelot CMS is going to be, at least partially, hosted by [Node.JS](https://nodejs.org/).
 
-This is a placeholder README.md for a new repository
+Since it's got a bunch of Classic ASP pages in there, this is a first stab at writing a Classic ASP
+handler for Node. We'll see how far we get.
 
 ### License
 
