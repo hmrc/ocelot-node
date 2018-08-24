@@ -17,5 +17,12 @@ World "Quotes"
  %>
 
 Whoop!
+<script src="bogus.js"></script>
+<script>
+    console.log("Client side script")
+</script>
+<script runat="server">
+    Response.Write("Server side script")
 
+</script>
 <!-- #include file="include.inc" -->

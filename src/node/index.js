@@ -33,29 +33,42 @@ class ASPResponse {
 
 }
 
+
 class ASPRequest {
     constructor(context) {
         this.context = context;
     }
 
     QueryString(key) {
-        if ("query" in this.context.url && key in this.context.url.query) {
-            return {
-                item: this.context.url.query[key]
-            }
+        return {
+            item : this.context.url.query[key]
         }
-        return undefined;
     }
 }
 
 function sendError(status, message, res) {
-    res.statusCode = status;
-    res.setHeader("Content-Type", "text/plain");
+    if (!res.headersSent) {
+        res.statusCode = status;
+        res.setHeader("Content-Type", "text/plain");
+    }
     res.end(message);
 }
 
 function wrapText(text) {
     return 'Response.Write("' + text + '");';
+}
+
+function escapeText(text) {
+    let result = [];
+    for (let i = 0; i < text.length; i += 1) {
+        const c = text.charAt(i);
+        if (c in replace) {
+            result.push(replace[c]);
+        } else {
+            result.push(c);
+        }
+    }
+    return result.join('');
 }
 
 function readP(target) {
@@ -71,6 +84,19 @@ function readP(target) {
     })
 }
 
+function getAttributes(str) {
+    const attr = {};
+    const match = str.match(/([^\t\n\f \/>"'=]+)="((?:[^"\\]|\\.)*)"/g)
+
+    if (match !== null) {
+        for (let i = 0; i < match.length; i += 1) {
+            const [key, value] = match[i].split("=");
+            attr[key] = value.substring(1, value.length - 1);
+        }
+    }
+    return attr;
+}
+
 async function parseASP(myPath, str, startingState) {
     console.log("Parsing ", myPath);
     let chunks = [];
@@ -83,88 +109,85 @@ async function parseASP(myPath, str, startingState) {
             index += 1;
             if (chunk.length > 0) {
                 chunks.push(wrapText(chunk));
-                chunk = "";
             }
+            chunk = "";
             state = "code";
         } else if (state === "text" && str.substr(index, 4) === "<!--") {
             if (chunk.length > 0) {
                 chunks.push(wrapText(chunk));
-                chunk = "";
             }
-
-            // comment
+            chunk = "";
             index += 2;
             const start = index;
 
             while (index < str.length && str.substr(index, 3) !== "-->") {
-                index += 3;
+                index += 1;
             }
 
             if (index === str.length) {
                 // invalid comment
-                context.res.end();
+                throw new Error("Invalid comment");
             }
 
             const comment = str.substr(start, index)
             const incIndex = comment.indexOf("#include");
             if (incIndex !== -1) {
-                let pathIndex = str.indexOf("file", incIndex);
-                if (pathIndex !== -1) {
-                    const quoteStart = str.indexOf("\"", pathIndex);
-                    const quoteEnd = str.indexOf("\"", quoteStart + 1)
-                    const path = str.substring(quoteStart + 1, quoteEnd);
-                    const targetFile = PATH.normalize(PATH.dirname(myPath) + "/" + path);
-                    const includeChunks = await readP(targetFile).then(data => parseASP(targetFile, data.toString()));
+                const attr = getAttributes(comment.substring(incIndex + "#include".length))
+                let path;
+                if ("file" in attr) {
+                    path = PATH.normalize(PATH.dirname(myPath) + "/" + attr["file"]);
+                } else if ("virtual" in attr) {
+                    path = attr["virtual"];
+                }
 
+                if (path !== undefined) {
+                    const includeChunks = await readP(path).then(data => parseASP(path, data.toString()));
                     chunks = chunks.concat(includeChunks);
-
                 }
             } else {
                 chunks.push("<!--" + comment + "-->");
-                chunk = "";
             }
-        } else if (state === "text" && str.startsWith("<script", index)) {
+            index += comment.length + "-->".length;
+        } else if (state === "text" && str.startsWith("<script ", index)) {
             console.log("Handling script");
             if (chunk.length > 0) {
                 chunks.push(wrapText(chunk));
-                chunk = "";
             }
+            chunk = "";
 
-            const scriptStart = index + "<script".length;
+            const scriptStart = index + "<script ".length;
             const scriptTag = str.substring(scriptStart, str.indexOf(">", scriptStart))
-            const match = scriptTag.match(/([^\t\n\f \/>"'=]+)="((?:[^"\\]|\\.)*)"/g)
+            const scriptEnd = str.indexOf("</script>", index);
+            const attr = getAttributes(scriptTag);
 
-            if (match !== null) {
-                const attr = {};
-                for (let i = 0; i < match.length; i += 1) {
-                    const [key, value] = match[i].split("=");
-                    attr[key] = value.substring(1, value.length - 1);
-                }
-
-                if (attr["runat"] === "server") {
-                    if ("src" in attr) {
-                        let targetFile;
-                        if (attr["src"].startsWith("/")) {
-                            targetFile = attr["src"]
-                        } else {
-
-                            targetFile = PATH.normalize(PATH.dirname(myPath) + "/" + path);
-                        }
-                        console.log("Trying to read server side script file from ", targetFile);
-                        const includeChunks = await readP(targetFile).then(data => parseASP(targetFile, data.toString(), "code"));
-                        chunks = chunks.concat(includeChunks);
-
-                        index += scriptStart + scriptTag.length + 1;
+            if (attr["runat"] === "server") {
+                if ("src" in attr) {
+                    let path;
+                    if (attr["src"].startsWith("/")) {
+                        path = attr["src"]
                     } else {
-                        console.log("Including embedded server side script");
-                        chunks.push(str.substring(scriptStart + scriptTag.length, str.indexOf("</script>")));
-
-                        index += chunks[chunks.length - 1].length + "</script>".length;
+                        path = PATH.normalize(PATH.dirname(myPath) + "/" + path);
                     }
+                    console.log("Trying to read server side script file from ", path);
+                    const includeChunks = await readP(path).then(data => parseASP(path, data.toString(), "code"));
+                    chunks = chunks.concat(includeChunks);
                 } else {
-                    // Find the end tag and include the script
+                    console.log("Including embedded server side script");
+                    chunks.push(str.substring(scriptStart + scriptTag.length + 1, scriptEnd));
                 }
+            } else {
+                chunks.push(
+                    wrapText(
+                        escapeText(
+                            "<script " +
+                            scriptTag +
+                            str.substring(scriptStart + scriptTag.length, scriptEnd) +
+                            "</script>"
+                        )
+                    )
+                );
             }
+            index = scriptEnd + "</script>".length;
         } else if (state === "code" && str.substr(index, 2) === "%>") {
             index += 1;
             if (chunk.length > 0) {
@@ -219,7 +242,7 @@ function handleASP(context) {
             .then(chunks => convertASP(context, chunks))
         ).catch(ex => sendError(500, ex.stack, context.res))
     } else {
-        sendError(404, "File not found", context.res);
+        sendError(404, "File not found: " + context.url.pathname, context.res);
     }
 }
 
