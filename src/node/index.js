@@ -7,8 +7,8 @@ const PATH = require("path");
 
 const hostname = "127.0.0.1";
 const port = "3000";
-const wwwRoot = "C:/Projects/ocelot-cms/wwwroot/";
-//const wwwRoot = "C:/Projects/ocelot-node/wwwroot/";
+//const wwwRoot = "C:/Projects/ocelot-cms/wwwroot/";
+const wwwRoot = "C:/Projects/ocelot-node/wwwroot/";
 
 const replace = {
     "\n": "\\n",
@@ -22,6 +22,42 @@ const mimeTypes = {
     "css": "text/css"
 }
 
+function buildASPActiveXObject(context) {
+    return function (type) {
+        if (type.startsWith("MSXML2")) {
+            return {
+                load(path) {
+                    console.log("This is where I'd load something")
+                }
+            }
+        } else if (type.startsWith("FSO")) {
+            return {
+                fileExists: function (path) {
+                    return FS.existsSync(path);
+                },
+                folderExists: function (path) {
+                    return FS.folderExists(path);
+                }
+            }
+        }
+    }
+}
+
+class ASPServer {
+    constructor(context) {
+        this.context = context;
+    }
+
+    MapPath(path) {
+        return wwwRoot + path;
+    }
+
+    CreateObject(type) {
+        var ActiveXObject = buildASPActiveXObject(this.context);
+        return new ActiveXObject(type);
+    }
+}
+
 class ASPResponse {
     constructor(context) {
         this.context = context;
@@ -30,9 +66,7 @@ class ASPResponse {
     Write(message) {
         this.context.res.write(message);
     }
-
 }
-
 
 class ASPRequest {
     constructor(context) {
@@ -40,8 +74,17 @@ class ASPRequest {
     }
 
     QueryString(key) {
+        const item = this.context.url.query[key]
+
+        // This is a bit weird - the original code
+        // works both as a value and as a function call.
+        // Looks like setting toString fixes it.
+        const result = function () {
+            return item;
+        }
+        result.toString = result;
         return {
-            item : this.context.url.query[key]
+            item: result
         }
     }
 }
@@ -117,7 +160,7 @@ async function parseASP(myPath, str, startingState) {
                 chunks.push(wrapText(chunk));
             }
             chunk = "";
-            index += 2;
+            index += 4;
             const start = index;
 
             while (index < str.length && str.substr(index, 3) !== "-->") {
@@ -129,10 +172,13 @@ async function parseASP(myPath, str, startingState) {
                 throw new Error("Invalid comment");
             }
 
-            const comment = str.substr(start, index)
+            const comment = str.substring(start, index)
+
+            console.log("Comment: [" + comment + "]");
             const incIndex = comment.indexOf("#include");
             if (incIndex !== -1) {
                 const attr = getAttributes(comment.substring(incIndex + "#include".length))
+                console.log("Comment attr: ", attr);
                 let path;
                 if ("file" in attr) {
                     path = PATH.normalize(PATH.dirname(myPath) + "/" + attr["file"]);
@@ -147,7 +193,7 @@ async function parseASP(myPath, str, startingState) {
             } else {
                 chunks.push("<!--" + comment + "-->");
             }
-            index += comment.length + "-->".length;
+            index += 2;
         } else if (state === "text" && str.startsWith("<script ", index)) {
             console.log("Handling script");
             if (chunk.length > 0) {
@@ -220,15 +266,21 @@ async function parseASP(myPath, str, startingState) {
 
 function convertASP(context, chunks) {
     const sandbox = {
+        Server: new ASPServer(context),
         Response: new ASPResponse(context),
-        Request: new ASPRequest(context)
+        Request: new ASPRequest(context),
+        ActiveXObject: buildASPActiveXObject(context)
     }
 
-    console.log("Parse complete: ", chunks.join("\n"));
-
-    VM.runInNewContext(chunks.join("\n"), sandbox, {
-        filename: context.url.pathname
-    })
+    //console.log("Parse complete: ", chunks.join("\n"));
+    let debug = false;
+    if (debug) {
+        chunks.forEach(c => context.res.write(c));
+    } else {
+        VM.runInNewContext(chunks.join("\n"), sandbox, {
+            filename: context.url.pathname
+        })
+    }
 
     context.res.end();
 }
