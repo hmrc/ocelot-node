@@ -13,7 +13,8 @@ const wwwRoot = "C:/Projects/ocelot-node/wwwroot/";
 const replace = {
     "\n": "\\n",
     "\r": "\\r",
-    "\"": "\\\""
+    "\"": "\\\"",
+    "\\": "\\\\"
 }
 
 const mimeTypes = {
@@ -63,7 +64,7 @@ class ASPResponse {
         this.context = context;
     }
 
-    Write(message) {
+    write(message) {
         this.context.res.write(message);
     }
 }
@@ -73,12 +74,23 @@ class ASPRequest {
         this.context = context;
     }
 
-    QueryString(key) {
+    querystring(key) {
         const item = this.context.url.query[key]
 
         // This is a bit weird - the original code
         // works both as a value and as a function call.
         // Looks like setting toString fixes it.
+        const result = function () {
+            return item;
+        }
+        result.toString = result;
+        return {
+            item: result
+        }
+    }
+
+    form(key) {
+        const item = "body" in this.context ? this.body[key] : undefined;
         const result = function () {
             return item;
         }
@@ -114,7 +126,7 @@ function escapeText(text) {
     return result.join('');
 }
 
-function readP(target) {
+function readFile(target) {
     console.log("Reading file ", target);
     return new Promise((resolve, reject) => {
         FS.readFile(wwwRoot + target, (err, data) => {
@@ -187,7 +199,7 @@ async function parseASP(myPath, str, startingState) {
                 }
 
                 if (path !== undefined) {
-                    const includeChunks = await readP(path).then(data => parseASP(path, data.toString()));
+                    const includeChunks = await readFile(path).then(data => parseASP(path, data.toString()));
                     chunks = chunks.concat(includeChunks);
                 }
             } else {
@@ -215,7 +227,7 @@ async function parseASP(myPath, str, startingState) {
                         path = PATH.normalize(PATH.dirname(myPath) + "/" + path);
                     }
                     console.log("Trying to read server side script file from ", path);
-                    const includeChunks = await readP(path).then(data => parseASP(path, data.toString(), "code"));
+                    const includeChunks = await readFile(path).then(data => parseASP(path, data.toString(), "code"));
                     chunks = chunks.concat(includeChunks);
                 } else {
                     console.log("Including embedded server side script");
@@ -265,16 +277,27 @@ async function parseASP(myPath, str, startingState) {
 }
 
 function convertASP(context, chunks) {
+    // The original environments seems to be case-insensitive
+    // for properties + methods on system objects.
+    const handler = {
+        get: function (obj, prop) { 
+            return obj[prop.toLowerCase()]
+        },
+        set: function (obj, prop, value) {
+            if (prop.toLowerCase() in obj) {
+                Reflect.set(obj, prop.toLwerCase(), value);
+            }
+        }
+    }
+
     const sandbox = {
-        Server: new ASPServer(context),
-        Response: new ASPResponse(context),
-        Request: new ASPRequest(context),
+        Server: new Proxy(new ASPServer(context), handler),
+        Response: new Proxy(new ASPResponse(context), handler),
+        Request: new Proxy(new ASPRequest(context), handler),
         ActiveXObject: buildASPActiveXObject(context)
     }
 
-    //console.log("Parse complete: ", chunks.join("\n"));
-    let debug = false;
-    if (debug) {
+    if (context.debug) {
         chunks.forEach(c => context.res.write(c));
     } else {
         VM.runInNewContext(chunks.join("\n"), sandbox, {
@@ -290,7 +313,7 @@ function handleASP(context) {
     const targetFile = context.url.pathname;
 
     if (FS.existsSync(wwwRoot + targetFile)) {
-        readP(targetFile).then(data => parseASP(targetFile, data.toString())
+        readFile(targetFile).then(data => parseASP(targetFile, data.toString())
             .then(chunks => convertASP(context, chunks))
         ).catch(ex => sendError(500, ex.stack, context.res))
     } else {
@@ -366,5 +389,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, hostname, () => {
-    console.log("Server running at http://${hostname}:${port}/");
+    console.log(`Server running at http://${hostname}:${port}/`);
 });

@@ -4,7 +4,7 @@ Hello
 
     Response.Write(x + "\n");
 
-    Response.Write("Hello, world!"); 
+    Response.WrITE("Hello, world! (but with mixed case)"); 
 
     var total = 10;
 %>
